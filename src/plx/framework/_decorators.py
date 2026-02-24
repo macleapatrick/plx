@@ -1,0 +1,552 @@
+"""POU decorators: @fb, @program, @function(returns=...), @method.
+
+These orchestrate the full compilation pipeline — collecting variable
+descriptors, parsing the ``logic()`` method source, compiling via AST
+transformation, and assembling the resulting POU IR node.
+
+Compilation is eager (happens at decoration time), so errors surface
+at import time.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+import io
+import tokenize
+from dataclasses import dataclass
+from typing import Any
+
+from plx.model.pou import (
+    AccessSpecifier,
+    Language,
+    Method,
+    Network,
+    POU,
+    POUInterface,
+    POUType,
+)
+from plx.model.types import TypeRef
+from plx.model.variables import Variable
+
+from ._compiler import ASTCompiler, CompileContext, CompileError, resolve_annotation
+from ._compilation_helpers import (
+    _build_compile_context,
+    _discover_enums,
+    _parse_function_source,
+)
+from ._descriptors import VarDescriptor, VarDirection, _collect_descriptors
+from ._protocols import CompiledPOU
+from ._types import _resolve_type_ref
+
+
+# ---------------------------------------------------------------------------
+# @method decorator
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _MethodMarker:
+    """Stored as ``func._plx_marker`` on @method-decorated functions."""
+    access: AccessSpecifier
+
+
+def method(
+    func: Any = None,
+    *,
+    access: AccessSpecifier = AccessSpecifier.PUBLIC,
+) -> Any:
+    """Mark a function as a PLC method on a function block.
+
+    Can be used as ``@method`` or ``@method(access=PRIVATE)``.
+
+    Method parameters (with type annotations) become VAR_INPUT.
+    The return annotation becomes the method's return type.
+
+    Example::
+
+        @fb
+        class Conveyor:
+            speed = static_var(REAL)
+
+            def logic(self):
+                pass
+
+            @method
+            def start(self, target_speed: REAL) -> BOOL:
+                self.speed = target_speed
+                return True
+
+            @method(access=PRIVATE)
+            def _reset_internals(self):
+                self.speed = 0.0
+    """
+    marker = _MethodMarker(access=access)
+    if func is not None:
+        # Used as @method (no parentheses)
+        func._plx_marker = marker
+        return func
+    else:
+        # Used as @method() or @method(access=PRIVATE)
+        def decorator(fn: Any) -> Any:
+            fn._plx_marker = marker
+            return fn
+        return decorator
+
+
+def _is_method(obj: object) -> bool:
+    """Check if an object is a @method-decorated function."""
+    return callable(obj) and isinstance(
+        getattr(obj, '_plx_marker', None), _MethodMarker,
+    )
+
+
+def _collect_methods(cls: type) -> list[tuple[str, Any, AccessSpecifier]]:
+    """Collect @method-decorated functions from *cls* and its MRO.
+
+    Returns ``(name, function, access)`` tuples.  Parent methods come
+    first; child methods with the same name override the parent's.
+    """
+    seen: set[str] = set()
+    collected: list[tuple[str, Any, AccessSpecifier]] = []
+
+    # Walk MRO in reverse so parent methods appear first
+    for base in reversed(cls.__mro__):
+        if base is object:
+            continue
+        for attr_name, value in base.__dict__.items():
+            if not _is_method(value):
+                continue
+            if attr_name in seen:
+                # Child overrides parent — remove earlier entry
+                collected = [(n, f, a) for n, f, a in collected if n != attr_name]
+            seen.add(attr_name)
+            marker = value._plx_marker
+            collected.append((attr_name, value, marker.access))
+
+    return collected
+
+
+def _compile_method(
+    method_name: str,
+    method_func: Any,
+    method_access: AccessSpecifier,
+    cls: type,
+    declared_vars: dict[str, str],
+    static_var_types: dict[str, TypeRef],
+    source_file: str,
+) -> Method:
+    """Compile a single @method-decorated function into a Method IR node."""
+
+    context_name = f"{cls.__name__}.{method_name}()"
+    func_def, _, start_lineno = _parse_function_source(
+        method_func, context_name, validate_self_only=False,
+    )
+
+    # Extract parameters → method input_vars
+    method_input_vars: list[Variable] = []
+    method_declared_vars = dict(declared_vars)  # copy — includes FB vars
+
+    for arg in func_def.args.args:
+        param_name = arg.arg
+        if param_name == "self":
+            continue
+
+        if arg.annotation is None:
+            raise CompileError(
+                f"Method parameter '{param_name}' in {context_name} "
+                f"must have a type annotation"
+            )
+
+        type_ref = _resolve_method_annotation(arg.annotation, cls, method_name)
+        method_input_vars.append(Variable(name=param_name, data_type=type_ref))
+        method_declared_vars[param_name] = VarDirection.INPUT
+
+    # Extract return type
+    return_type: TypeRef | None = None
+    if func_def.returns is not None:
+        return_type = _resolve_method_annotation(func_def.returns, cls, method_name)
+
+    # Create compile context (includes FB's vars + method params)
+    ctx = _build_compile_context(
+        method_func, cls,
+        method_declared_vars, static_var_types,
+        start_lineno, source_file,
+    )
+
+    # Compile body
+    compiler = ASTCompiler(ctx)
+    statements = compiler.compile_body(func_def)
+
+    # Assemble Method
+    method_interface = POUInterface(
+        input_vars=method_input_vars,
+        static_vars=ctx.generated_static_vars,
+        temp_vars=ctx.generated_temp_vars,
+    )
+
+    return Method(
+        name=method_name,
+        return_type=return_type,
+        access=method_access,
+        interface=method_interface,
+        networks=[Network(statements=statements)],
+    )
+
+
+def _resolve_method_annotation(ann: ast.expr, cls: type, method_name: str) -> TypeRef | None:
+    """Resolve a type annotation in a @method context."""
+    return resolve_annotation(
+        ann,
+        location_hint=f"{cls.__name__}.{method_name}()",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Language validation
+# ---------------------------------------------------------------------------
+
+def _validate_language(language: str | None) -> Language | None:
+    """Validate and convert a language string to a Language enum value."""
+    if language is None:
+        return None
+    if language == "SFC":
+        raise CompileError(
+            "language='SFC' is not supported on @fb/@program/@function. "
+            "Use @sfc instead."
+        )
+    try:
+        return Language(language)
+    except ValueError:
+        valid = ", ".join(f'"{v.value}"' for v in Language)
+        raise CompileError(
+            f"Invalid language '{language}'. Valid options: {valid}"
+        ) from None
+
+
+# ---------------------------------------------------------------------------
+# Comment extraction
+# ---------------------------------------------------------------------------
+
+def _extract_comments(source: str) -> dict[int, str]:
+    """Extract standalone comments from source.
+
+    Returns ``{line_number: text}`` where *line_number* is 1-based and
+    *text* is the comment content with the leading ``#`` and whitespace
+    stripped.  Only standalone comments (nothing before ``#`` on the line)
+    are included; inline comments and empty ``#`` lines are excluded.
+    """
+    comments: dict[int, str] = {}
+    source_lines = source.splitlines()
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for tok in tokens:
+            if tok.type != tokenize.COMMENT:
+                continue
+            line_idx = tok.start[0] - 1
+            if line_idx >= len(source_lines):
+                continue
+            # Only standalone comments (nothing before # on the line)
+            preceding = source_lines[line_idx][:tok.start[1]].strip()
+            if preceding:
+                continue
+            text = tok.string[1:].strip()  # strip '#' + whitespace
+            if text:
+                comments[tok.start[0]] = text
+    except tokenize.TokenError:
+        pass
+    return comments
+
+
+def _split_body_by_comments(
+    func_def: ast.FunctionDef,
+    comments: dict[int, str],
+) -> list[tuple[str | None, list[ast.stmt]]]:
+    """Split a function body into groups separated by standalone comments.
+
+    Only top-level comments (not inside control structures) trigger splits.
+    Consecutive comments are merged with ``"\\n"``.  Trailing comments after
+    the last statement are discarded.
+
+    Returns ``[(comment_or_None, [ast_nodes]), ...]``.
+    """
+    body = func_def.body
+    if not body or not comments:
+        return [(None, list(body))]
+
+    # Determine which comment lines are top-level (not inside any body node)
+    top_level_comments: set[int] = set()
+    for line_no in comments:
+        inside = False
+        for node in body:
+            # A comment is inside a node if the node spans multiple lines
+            # and the comment falls within those lines (excluding the first
+            # line, which is the node's own header line).
+            if node.lineno < line_no and node.end_lineno is not None and line_no <= node.end_lineno:
+                inside = True
+                break
+        if not inside:
+            top_level_comments.add(line_no)
+
+    if not top_level_comments:
+        return [(None, list(body))]
+
+    # Walk body nodes, splitting on preceding top-level comments
+    groups: list[tuple[str | None, list[ast.stmt]]] = []
+    current_comment: str | None = None
+    current_nodes: list[ast.stmt] = []
+    last_end: int = func_def.lineno + 1  # line after 'def ..():'
+
+    for node in body:
+        # Find top-level comments between last_end and this node
+        preceding: list[int] = sorted(
+            ln for ln in top_level_comments if last_end <= ln < node.lineno
+        )
+
+        if preceding:
+            # Flush current group if it has nodes
+            if current_nodes:
+                groups.append((current_comment, current_nodes))
+                current_comment = None
+                current_nodes = []
+
+            # Merge consecutive comment lines
+            merged = "\n".join(comments[ln] for ln in preceding)
+            if current_comment is not None:
+                # Merge with unflushed comment that had no nodes
+                current_comment = current_comment + "\n" + merged
+            else:
+                current_comment = merged
+
+        current_nodes.append(node)
+        last_end = (node.end_lineno or node.lineno) + 1
+
+    # Flush final group (trailing comments with no following node are discarded)
+    if current_nodes:
+        groups.append((current_comment, current_nodes))
+
+    if not groups:
+        return [(None, list(body))]
+
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# Core compilation pipeline
+# ---------------------------------------------------------------------------
+
+def _detect_parent_pou(cls: type) -> str | None:
+    """Walk MRO to find the first parent with a compiled POU (inheritance)."""
+    for base in cls.__mro__[1:]:
+        if base is object:
+            continue
+        if isinstance(base, CompiledPOU):
+            return base._compiled_pou.name
+    return None
+
+
+def _build_var_context(
+    cls: type,
+) -> tuple[dict[str, list], dict[str, VarDirection], dict[str, TypeRef]]:
+    """Collect descriptors and build declared_vars + static_var_types maps."""
+    var_groups = _collect_descriptors(cls)
+    declared_vars: dict[str, VarDirection] = {}
+    static_var_types: dict[str, TypeRef] = {}
+
+    for direction_str, var_list in var_groups.items():
+        direction = VarDirection(direction_str)
+        for v in var_list:
+            declared_vars[v.name] = direction
+            if direction is VarDirection.STATIC:
+                static_var_types[v.name] = v.data_type
+
+    return var_groups, declared_vars, static_var_types
+
+
+def _parse_logic_source(cls: type) -> tuple[ast.FunctionDef, str, int]:
+    """Extract logic() source, parse to AST, validate signature.
+
+    Returns ``(func_def, source, start_lineno)``.
+    """
+    if not hasattr(cls, "logic"):
+        raise CompileError(
+            f"POU class '{cls.__name__}' must have a logic() method"
+        )
+
+    return _parse_function_source(
+        cls.logic,
+        f"{cls.__name__}.logic()",
+        validate_self_only=True,
+    )
+
+
+def _compile_logic_networks(
+    func_def: ast.FunctionDef,
+    ctx: CompileContext,
+    source: str,
+) -> list[Network]:
+    """Compile the logic() body into networks (split by comments)."""
+    compiler = ASTCompiler(ctx)
+    comments = _extract_comments(source)
+    groups = _split_body_by_comments(func_def, comments)
+
+    networks: list[Network] = []
+    for comment, nodes in groups:
+        stmts = compiler.compile_statements(nodes)
+        networks.append(Network(comment=comment, statements=stmts))
+    return networks
+
+
+def _compile_all_methods(
+    cls: type,
+    declared_vars: dict[str, VarDirection],
+    static_var_types: dict[str, TypeRef],
+    source_file: str,
+) -> list[Method]:
+    """Compile all @method-decorated functions on *cls*."""
+    compiled_methods: list[Method] = []
+    for method_name, method_func, method_access in _collect_methods(cls):
+        compiled_methods.append(_compile_method(
+            method_name=method_name,
+            method_func=method_func,
+            method_access=method_access,
+            cls=cls,
+            declared_vars=declared_vars,
+            static_var_types=static_var_types,
+            source_file=source_file,
+        ))
+    return compiled_methods
+
+
+def _compile_pou_class(
+    cls: type,
+    pou_type: POUType,
+    return_type: TypeRef | None = None,
+    language: Language | None = None,
+    folder: str = "",
+) -> type:
+    """Core compilation pipeline shared by @fb, @program, @function."""
+
+    extends = _detect_parent_pou(cls)
+    var_groups, declared_vars, static_var_types = _build_var_context(cls)
+    func_def, source, start_lineno = _parse_logic_source(cls)
+
+    try:
+        source_file = inspect.getfile(cls)
+    except (TypeError, OSError):
+        source_file = "<unknown>"
+
+    ctx = _build_compile_context(
+        cls.logic, cls,
+        declared_vars, static_var_types,
+        start_lineno, source_file,
+    )
+
+    networks = _compile_logic_networks(func_def, ctx, source)
+    compiled_methods = _compile_all_methods(cls, declared_vars, static_var_types, source_file)
+
+    interface = POUInterface(
+        input_vars=var_groups["input"],
+        output_vars=var_groups["output"],
+        inout_vars=var_groups["inout"],
+        static_vars=var_groups["static"] + ctx.generated_static_vars,
+        temp_vars=var_groups["temp"] + ctx.generated_temp_vars,
+        constant_vars=var_groups["constant"],
+    )
+
+    pou = POU(
+        pou_type=pou_type,
+        name=cls.__name__,
+        folder=folder,
+        language=language,
+        return_type=return_type,
+        extends=extends,
+        interface=interface,
+        networks=networks,
+        methods=compiled_methods,
+    )
+
+    cls._compiled_pou = pou
+
+    @classmethod
+    def compile(klass: type) -> POU:
+        return klass._compiled_pou
+
+    cls.compile = compile
+
+    return cls
+
+
+# ---------------------------------------------------------------------------
+# Public decorators
+# ---------------------------------------------------------------------------
+
+def fb(cls: type = None, *, language: str | None = None, folder: str = "") -> Any:
+    """Decorate a class as a FUNCTION_BLOCK POU.
+
+    Example::
+
+        @fb
+        class MyFB:
+            sensor = input_var(BOOL)
+            output = output_var(BOOL)
+
+            def logic(self):
+                self.output = self.sensor
+
+        @fb(language="LD")
+        class LadderFB:
+            ...
+    """
+    lang = _validate_language(language)
+    if cls is not None:
+        return _compile_pou_class(cls, POUType.FUNCTION_BLOCK, language=lang, folder=folder)
+
+    def decorator(c: type) -> type:
+        return _compile_pou_class(c, POUType.FUNCTION_BLOCK, language=lang, folder=folder)
+    return decorator
+
+
+def program(cls: type = None, *, language: str | None = None, folder: str = "") -> Any:
+    """Decorate a class as a PROGRAM POU.
+
+    Example::
+
+        @program
+        class Main:
+            running = input_var(BOOL)
+
+            def logic(self):
+                pass
+
+        @program(language="FBD")
+        class FbdMain:
+            ...
+    """
+    lang = _validate_language(language)
+    if cls is not None:
+        return _compile_pou_class(cls, POUType.PROGRAM, language=lang, folder=folder)
+
+    def decorator(c: type) -> type:
+        return _compile_pou_class(c, POUType.PROGRAM, language=lang, folder=folder)
+    return decorator
+
+
+def function(*, returns: Any, language: str | None = None, folder: str = "") -> Any:
+    """Decorator factory for a FUNCTION POU.
+
+    Example::
+
+        @function(returns=REAL)
+        class AddOne:
+            x = input_var(REAL)
+
+            def logic(self):
+                return self.x + 1.0
+    """
+    return_type = _resolve_type_ref(returns)
+    lang = _validate_language(language)
+
+    def decorator(cls: type) -> type:
+        return _compile_pou_class(cls, POUType.FUNCTION, return_type=return_type, language=lang, folder=folder)
+
+    return decorator

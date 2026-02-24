@@ -1,0 +1,515 @@
+"""End-to-end integration tests: framework-compiled POUs + simulator."""
+
+import pytest
+
+from plx.framework import (
+    ARRAY,
+    BOOL,
+    DINT,
+    INT,
+    REAL,
+    T,
+    delayed,
+    enumeration,
+    fb,
+    falling,
+    first_scan,
+    function,
+    input_var,
+    output_var,
+    program,
+    pulse,
+    rising,
+    static_var,
+    struct,
+    sustained,
+    temp_var,
+)
+from plx.simulate import simulate
+
+
+# ---------------------------------------------------------------------------
+# Canonical example: motor starts after delay
+# ---------------------------------------------------------------------------
+
+class TestMotorStartsAfterDelay:
+    def test_canonical(self):
+        @fb
+        class Motor:
+            cmd = input_var(BOOL)
+            running = output_var(BOOL)
+
+            def logic(self):
+                self.running = delayed(self.cmd, seconds=5)
+
+        ctrl = simulate(Motor)
+        ctrl.cmd = True
+        ctrl.scan()
+        assert not ctrl.running
+        ctrl.tick(seconds=5)
+        assert ctrl.running
+
+    def test_reset_on_cmd_false(self):
+        @fb
+        class Motor2:
+            cmd = input_var(BOOL)
+            running = output_var(BOOL)
+
+            def logic(self):
+                self.running = delayed(self.cmd, seconds=2)
+
+        ctrl = simulate(Motor2)
+        ctrl.cmd = True
+        ctrl.tick(seconds=1)
+        assert not ctrl.running
+        ctrl.cmd = False
+        ctrl.scan()
+        assert not ctrl.running
+
+
+# ---------------------------------------------------------------------------
+# Edge detection
+# ---------------------------------------------------------------------------
+
+class TestEdgeDetection:
+    def test_rising_edge(self):
+        @fb
+        class RisingTest:
+            signal = input_var(BOOL)
+            detected = output_var(BOOL)
+
+            def logic(self):
+                self.detected = rising(self.signal)
+
+        ctx = simulate(RisingTest)
+        ctx.signal = True
+        ctx.scan()
+        assert ctx.detected is True
+        ctx.scan()
+        assert ctx.detected is False
+
+    def test_falling_edge(self):
+        @fb
+        class FallingTest:
+            signal = input_var(BOOL)
+            detected = output_var(BOOL)
+
+            def logic(self):
+                self.detected = falling(self.signal)
+
+        ctx = simulate(FallingTest)
+        ctx.signal = True
+        ctx.scan()
+        assert ctx.detected is False
+        ctx.signal = False
+        ctx.scan()
+        assert ctx.detected is True
+        ctx.scan()
+        assert ctx.detected is False
+
+
+# ---------------------------------------------------------------------------
+# Counter: static var persistence
+# ---------------------------------------------------------------------------
+
+class TestCounter:
+    def test_counter_increments(self):
+        @fb
+        class Counter:
+            count = output_var(INT)
+
+            def logic(self):
+                self.count = self.count + 1
+
+        ctx = simulate(Counter)
+        ctx.scan()
+        assert ctx.count == 1
+        ctx.scan()
+        assert ctx.count == 2
+        ctx.scan(n=8)
+        assert ctx.count == 10
+
+
+# ---------------------------------------------------------------------------
+# Nested user-defined FB
+# ---------------------------------------------------------------------------
+
+class TestNestedUserFB:
+    def test_nested_fb(self):
+        @fb
+        class Doubler:
+            x = input_var(INT)
+            result = output_var(INT)
+
+            def logic(self):
+                self.result = self.x * 2
+
+        @fb
+        class Outer:
+            val = input_var(INT)
+            doubled = output_var(INT)
+            dbl = static_var(Doubler)
+
+            def logic(self):
+                self.dbl(x=self.val)
+                self.doubled = self.dbl.result
+
+        ctx = simulate(Outer, pous=[Doubler])
+        ctx.val = 7
+        ctx.scan()
+        assert ctx.doubled == 14
+
+
+# ---------------------------------------------------------------------------
+# For loop
+# ---------------------------------------------------------------------------
+
+class TestForLoop:
+    def test_for_loop_sum(self):
+        @fb
+        class Summer:
+            n = input_var(INT)
+            total = output_var(INT)
+
+            def logic(self):
+                self.total = 0
+                for i in range(1, self.n + 1):
+                    self.total = self.total + i
+
+        ctx = simulate(Summer)
+        ctx.n = 5
+        ctx.scan()
+        assert ctx.total == 15  # 1+2+3+4+5
+
+
+# ---------------------------------------------------------------------------
+# Case (match) statement
+# ---------------------------------------------------------------------------
+
+class TestCaseStatement:
+    def test_case_dispatch(self):
+        @fb
+        class Dispatcher:
+            mode = input_var(INT)
+            result = output_var(INT)
+
+            def logic(self):
+                match self.mode:
+                    case 1:
+                        self.result = 10
+                    case 2:
+                        self.result = 20
+                    case 3:
+                        self.result = 30
+                    case _:
+                        self.result = -1
+
+        ctx = simulate(Dispatcher)
+        ctx.mode = 2
+        ctx.scan()
+        assert ctx.result == 20
+
+        ctx.mode = 99
+        ctx.scan()
+        assert ctx.result == -1
+
+
+# ---------------------------------------------------------------------------
+# If/elsif/else
+# ---------------------------------------------------------------------------
+
+class TestIfElsifElse:
+    def test_branches(self):
+        @fb
+        class Classifier:
+            value = input_var(INT)
+            category = output_var(INT)
+
+            def logic(self):
+                if self.value < 0:
+                    self.category = -1
+                elif self.value == 0:
+                    self.category = 0
+                else:
+                    self.category = 1
+
+        ctx = simulate(Classifier)
+
+        ctx.value = -5
+        ctx.scan()
+        assert ctx.category == -1
+
+        ctx.value = 0
+        ctx.scan()
+        assert ctx.category == 0
+
+        ctx.value = 10
+        ctx.scan()
+        assert ctx.category == 1
+
+
+# ---------------------------------------------------------------------------
+# While loop
+# ---------------------------------------------------------------------------
+
+class TestWhileLoop:
+    def test_while(self):
+        @fb
+        class WhileTest:
+            result = output_var(INT)
+
+            def logic(self):
+                self.result = 1
+                while self.result < 100:
+                    self.result = self.result * 2
+
+        ctx = simulate(WhileTest)
+        ctx.scan()
+        assert ctx.result == 128  # 1->2->4->8->16->32->64->128
+
+
+# ---------------------------------------------------------------------------
+# Array access
+# ---------------------------------------------------------------------------
+
+class TestArrayAccess:
+    def test_array_read_write(self):
+        @fb
+        class ArrayTest:
+            data = static_var(ARRAY(INT, 5))
+            result = output_var(INT)
+
+            def logic(self):
+                self.data[0] = 10
+                self.data[1] = 20
+                self.data[2] = 30
+                self.result = self.data[0] + self.data[1] + self.data[2]
+
+        ctx = simulate(ArrayTest)
+        ctx.scan()
+        assert ctx.result == 60
+
+
+# ---------------------------------------------------------------------------
+# Struct member access
+# ---------------------------------------------------------------------------
+
+class TestStructMemberAccess:
+    def test_struct_read_write(self):
+        @struct
+        class MotorData:
+            speed: REAL = 0.0
+            running: BOOL = False
+
+        @fb
+        class StructTest:
+            data = static_var(MotorData)
+            out_speed = output_var(REAL)
+
+            def logic(self):
+                self.data.speed = 75.5
+                self.data.running = True
+                self.out_speed = self.data.speed
+
+        ctx = simulate(StructTest, data_types=[MotorData])
+        ctx.scan()
+        assert ctx.out_speed == pytest.approx(75.5)
+
+
+# ---------------------------------------------------------------------------
+# Sustained timer (TOF)
+# ---------------------------------------------------------------------------
+
+class TestSustainedTimer:
+    def test_sustained(self):
+        @fb
+        class SustainedTest:
+            trigger = input_var(BOOL)
+            output = output_var(BOOL)
+
+            def logic(self):
+                self.output = sustained(self.trigger, seconds=1)
+
+        ctx = simulate(SustainedTest)
+        ctx.trigger = True
+        ctx.scan()
+        assert ctx.output is True
+        ctx.trigger = False
+        ctx.scan()
+        assert ctx.output is True  # sustained for 1s
+        ctx.tick(seconds=1)
+        assert ctx.output is False
+
+
+# ---------------------------------------------------------------------------
+# Pulse timer (TP)
+# ---------------------------------------------------------------------------
+
+class TestPulseTimer:
+    def test_pulse(self):
+        @fb
+        class PulseTest:
+            trigger = input_var(BOOL)
+            output = output_var(BOOL)
+
+            def logic(self):
+                self.output = pulse(self.trigger, ms=500)
+
+        ctx = simulate(PulseTest)
+        ctx.trigger = True
+        ctx.scan()
+        assert ctx.output is True
+        ctx.tick(ms=500)
+        assert ctx.output is False
+
+
+# ---------------------------------------------------------------------------
+# Arithmetic expressions
+# ---------------------------------------------------------------------------
+
+class TestArithmeticExpressions:
+    def test_arithmetic(self):
+        @fb
+        class MathTest:
+            a = input_var(INT)
+            b = input_var(INT)
+            sum_val = output_var(INT)
+            diff = output_var(INT)
+            prod = output_var(INT)
+            quot = output_var(INT)
+            neg = output_var(INT)
+
+            def logic(self):
+                self.sum_val = self.a + self.b
+                self.diff = self.a - self.b
+                self.prod = self.a * self.b
+                self.quot = self.a // self.b
+                self.neg = -self.a
+
+        ctx = simulate(MathTest)
+        ctx.a = 10
+        ctx.b = 3
+        ctx.scan()
+        assert ctx.sum_val == 13
+        assert ctx.diff == 7
+        assert ctx.prod == 30
+        assert ctx.quot == 3
+        assert ctx.neg == -10
+
+
+# ---------------------------------------------------------------------------
+# Type conversion
+# ---------------------------------------------------------------------------
+
+class TestTypeConversion:
+    def test_int_to_real(self):
+        @fb
+        class ConvertTest:
+            x = input_var(INT)
+            y = output_var(REAL)
+
+            def logic(self):
+                self.y = INT_TO_REAL(self.x)
+
+        ctx = simulate(ConvertTest)
+        ctx.x = 42
+        ctx.scan()
+        assert ctx.y == pytest.approx(42.0)
+        assert isinstance(ctx.y, float)
+
+
+# ---------------------------------------------------------------------------
+# Function calls
+# ---------------------------------------------------------------------------
+
+class TestFunctionCalls:
+    def test_abs_min_max(self):
+        @fb
+        class FuncTest:
+            a = input_var(INT)
+            b = input_var(INT)
+            abs_a = output_var(INT)
+            min_ab = output_var(INT)
+            max_ab = output_var(INT)
+
+            def logic(self):
+                self.abs_a = abs(self.a)
+                self.min_ab = min(self.a, self.b)
+                self.max_ab = max(self.a, self.b)
+
+        ctx = simulate(FuncTest)
+        ctx.a = -5
+        ctx.b = 3
+        ctx.scan()
+        assert ctx.abs_a == 5
+        assert ctx.min_ab == -5
+        assert ctx.max_ab == 3
+
+
+# ---------------------------------------------------------------------------
+# Program POU
+# ---------------------------------------------------------------------------
+
+class TestProgramPOU:
+    def test_program(self):
+        @program
+        class Main:
+            running = input_var(BOOL)
+            status = output_var(INT)
+
+            def logic(self):
+                if self.running:
+                    self.status = 1
+                else:
+                    self.status = 0
+
+        ctx = simulate(Main)
+        ctx.running = True
+        ctx.scan()
+        assert ctx.status == 1
+
+
+# ---------------------------------------------------------------------------
+# first_scan() system flag
+# ---------------------------------------------------------------------------
+
+class TestFirstScanIntegration:
+    def test_first_scan_sets_init_flag(self):
+        @program
+        class InitProgram:
+            initialized = output_var(BOOL)
+
+            def logic(self):
+                if first_scan():
+                    self.initialized = True
+
+        ctx = simulate(InitProgram)
+        assert not ctx.initialized
+
+        # First scan: first_scan() is True → sets initialized
+        ctx.scan()
+        assert ctx.initialized
+
+        # Reset and scan again: first_scan() is False
+        ctx.initialized = False
+        ctx.scan()
+        assert not ctx.initialized
+
+    def test_first_scan_counter(self):
+        @fb
+        class ScanCounter:
+            count = output_var(INT)
+
+            def logic(self):
+                if first_scan():
+                    self.count = 100
+                self.count = self.count + 1
+
+        ctx = simulate(ScanCounter)
+        # First scan: first_scan() is True → count = 100, then +1 = 101
+        ctx.scan()
+        assert ctx.count == 101
+
+        # Second scan: first_scan() is False → count = 101 + 1 = 102
+        ctx.scan()
+        assert ctx.count == 102

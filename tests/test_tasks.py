@@ -1,0 +1,263 @@
+"""Tests for task scheduling configuration."""
+
+import pytest
+
+from plx.framework import (
+    BOOL, REAL,
+    T,
+    fb, program,
+    input_var, output_var,
+    project, task,
+)
+from plx.framework._project import PlxTask
+from plx.model.task import Task, TaskType
+from plx.model.project import Project
+
+
+# -- Fixtures ---------------------------------------------------------------
+
+@program
+class _FastLoop:
+    sensor = input_var(BOOL)
+    out = output_var(BOOL)
+
+    def logic(self):
+        self.out = self.sensor
+
+
+@program
+class _SlowLoop:
+    value = input_var(REAL)
+
+    def logic(self):
+        pass
+
+
+@program
+class _StartupProg:
+    def logic(self):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# task() constructor
+# ---------------------------------------------------------------------------
+
+class TestTaskConstructor:
+    def test_periodic_with_time_literal(self):
+        t = task("Main", periodic=T(ms=10), pous=[_FastLoop])
+        assert isinstance(t, PlxTask)
+        assert t.task_type == TaskType.PERIODIC
+        assert t.interval == "T#10ms"
+
+    def test_periodic_with_string(self):
+        t = task("Main", periodic="T#50ms")
+        assert t.interval == "T#50ms"
+
+    def test_continuous(self):
+        t = task("Background", continuous=True)
+        assert t.task_type == TaskType.CONTINUOUS
+        assert t.interval is None
+
+    def test_event(self):
+        t = task("OnAlarm", event="AlarmTrigger")
+        assert t.task_type == TaskType.EVENT
+        assert t.trigger_variable == "AlarmTrigger"
+
+    def test_startup(self):
+        t = task("Init", startup=True)
+        assert t.task_type == TaskType.STARTUP
+
+    def test_priority(self):
+        t = task("Main", periodic=T(ms=10), priority=3)
+        assert t.priority == 3
+
+    def test_default_priority(self):
+        t = task("Main", periodic=T(ms=10))
+        assert t.priority == 0
+
+    def test_watchdog(self):
+        t = task("Main", periodic=T(ms=10), watchdog=T(ms=500))
+        assert t.watchdog == "T#500ms"
+
+    def test_watchdog_string(self):
+        t = task("Main", periodic=T(ms=10), watchdog="T#1s")
+        assert t.watchdog == "T#1s"
+
+    def test_no_mode_raises(self):
+        with pytest.raises(ValueError, match="requires exactly one"):
+            task("Bad")
+
+    def test_multiple_modes_raises(self):
+        with pytest.raises(ValueError, match="only one scheduling mode"):
+            task("Bad", periodic=T(ms=10), continuous=True)
+
+    def test_periodic_and_startup_raises(self):
+        with pytest.raises(ValueError, match="only one scheduling mode"):
+            task("Bad", periodic=T(ms=10), startup=True)
+
+    def test_invalid_interval_type_raises(self):
+        with pytest.raises(TypeError, match="Expected a duration"):
+            task("Bad", periodic=42)
+
+
+# ---------------------------------------------------------------------------
+# task.compile()
+# ---------------------------------------------------------------------------
+
+class TestTaskCompile:
+    def test_compiles_to_ir(self):
+        t = task("Main", periodic=T(ms=10), pous=[_FastLoop])
+        ir = t.compile()
+        assert isinstance(ir, Task)
+        assert ir.name == "Main"
+        assert ir.task_type == TaskType.PERIODIC
+        assert ir.interval == "T#10ms"
+
+    def test_assigned_pous(self):
+        t = task("Main", periodic=T(ms=10), pous=[_FastLoop, _SlowLoop])
+        ir = t.compile()
+        assert ir.assigned_pous == ["_FastLoop", "_SlowLoop"]
+
+    def test_no_pous(self):
+        t = task("Empty", continuous=True)
+        ir = t.compile()
+        assert ir.assigned_pous == []
+
+    def test_non_pou_raises(self):
+        class NotAPOU:
+            pass
+
+        t = task("Bad", periodic=T(ms=10), pous=[NotAPOU])
+        with pytest.raises(TypeError, match="not a compiled POU"):
+            t.compile()
+
+    def test_fb_assigned_to_task_raises(self):
+        @fb
+        class SomeFB:
+            x = input_var(BOOL)
+            def logic(self):
+                pass
+
+        t = task("Bad", periodic=T(ms=10), pous=[SomeFB])
+        with pytest.raises(TypeError, match="Only programs can be assigned"):
+            t.compile()
+
+    def test_function_assigned_to_task_raises(self):
+        from plx.framework import function
+
+        @function(returns=REAL)
+        class SomeFunc:
+            x = input_var(REAL)
+            def logic(self):
+                return self.x + 1.0
+
+        t = task("Bad", periodic=T(ms=10), pous=[SomeFunc])
+        with pytest.raises(TypeError, match="Only programs can be assigned"):
+            t.compile()
+
+    def test_event_trigger(self):
+        t = task("OnAlarm", event="AlarmFlag", pous=[_FastLoop])
+        ir = t.compile()
+        assert ir.trigger_variable == "AlarmFlag"
+        assert ir.task_type == TaskType.EVENT
+
+    def test_startup_compile(self):
+        t = task("Init", startup=True, pous=[_StartupProg])
+        ir = t.compile()
+        assert ir.task_type == TaskType.STARTUP
+        assert ir.assigned_pous == ["_StartupProg"]
+
+
+# ---------------------------------------------------------------------------
+# project() with tasks
+# ---------------------------------------------------------------------------
+
+class TestProjectWithTasks:
+    def test_project_with_tasks(self):
+        proj = project("MyProject",
+            tasks=[
+                task("MainTask", periodic=T(ms=10), pous=[_FastLoop], priority=1),
+                task("SlowTask", periodic=T(ms=100), pous=[_SlowLoop], priority=5),
+            ]
+        )
+        ir = proj.compile()
+        assert isinstance(ir, Project)
+        assert len(ir.tasks) == 2
+        assert ir.tasks[0].name == "MainTask"
+        assert ir.tasks[0].interval == "T#10ms"
+        assert ir.tasks[0].priority == 1
+        assert ir.tasks[1].name == "SlowTask"
+        assert ir.tasks[1].interval == "T#100ms"
+
+    def test_task_pous_included_in_project(self):
+        """POUs referenced in tasks are auto-included in project.pous."""
+        proj = project("AutoInclude",
+            tasks=[
+                task("Main", periodic=T(ms=10), pous=[_FastLoop]),
+            ]
+        )
+        ir = proj.compile()
+        pou_names = [p.name for p in ir.pous]
+        assert "_FastLoop" in pou_names
+
+    def test_no_duplicate_pous(self):
+        """POUs in both pous= and tasks= aren't duplicated."""
+        proj = project("NoDup",
+            pous=[_FastLoop],
+            tasks=[
+                task("Main", periodic=T(ms=10), pous=[_FastLoop]),
+            ]
+        )
+        ir = proj.compile()
+        pou_names = [p.name for p in ir.pous]
+        assert pou_names.count("_FastLoop") == 1
+
+    def test_mixed_pous_and_tasks(self):
+        """Project with explicit pous and tasks collects all POUs."""
+        proj = project("Mixed",
+            pous=[_StartupProg],
+            tasks=[
+                task("Main", periodic=T(ms=10), pous=[_FastLoop]),
+                task("Slow", periodic=T(ms=100), pous=[_SlowLoop]),
+            ]
+        )
+        ir = proj.compile()
+        pou_names = {p.name for p in ir.pous}
+        assert pou_names == {"_StartupProg", "_FastLoop", "_SlowLoop"}
+
+    def test_empty_tasks(self):
+        proj = project("NoTasks", pous=[_FastLoop])
+        ir = proj.compile()
+        assert len(ir.tasks) == 0
+
+    def test_serializes_with_tasks(self):
+        proj = project("SerProject",
+            tasks=[
+                task("Main", periodic=T(ms=10), pous=[_FastLoop], priority=1),
+            ]
+        )
+        ir = proj.compile()
+        data = ir.model_dump()
+        assert len(data["tasks"]) == 1
+        assert data["tasks"][0]["name"] == "Main"
+        assert data["tasks"][0]["task_type"] == "PERIODIC"
+        assert data["tasks"][0]["interval"] == "T#10ms"
+        assert data["tasks"][0]["priority"] == 1
+        assert data["tasks"][0]["assigned_pous"] == ["_FastLoop"]
+
+    def test_roundtrips_with_tasks(self):
+        proj = project("RoundTrip",
+            tasks=[
+                task("Main", periodic=T(ms=10), pous=[_FastLoop]),
+                task("Init", startup=True, pous=[_StartupProg]),
+            ]
+        )
+        ir = proj.compile()
+        json_str = ir.model_dump_json()
+        restored = Project.model_validate_json(json_str)
+        assert len(restored.tasks) == 2
+        assert restored.tasks[0].name == "Main"
+        assert restored.tasks[0].task_type == TaskType.PERIODIC
+        assert restored.tasks[1].name == "Init"
+        assert restored.tasks[1].task_type == TaskType.STARTUP

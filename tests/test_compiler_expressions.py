@@ -1,0 +1,404 @@
+"""Tests for AST compiler — expression handlers."""
+
+from conftest import compile_expr
+
+from plx.model.expressions import (
+    ArrayAccessExpr,
+    BinaryExpr,
+    BinaryOp,
+    BitAccessExpr,
+    CallArg,
+    FunctionCallExpr,
+    LiteralExpr,
+    MemberAccessExpr,
+    TypeConversionExpr,
+    UnaryExpr,
+    UnaryOp,
+    VariableRef,
+)
+from plx.model.types import PrimitiveType, PrimitiveTypeRef, NamedTypeRef
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+class TestConstant:
+    def test_int(self):
+        result = compile_expr("42")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "42"
+
+    def test_float(self):
+        result = compile_expr("3.14")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "3.14"
+
+    def test_bool_true(self):
+        result = compile_expr("True")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "TRUE"
+        assert result.data_type == PrimitiveTypeRef(type=PrimitiveType.BOOL)
+
+    def test_bool_false(self):
+        result = compile_expr("False")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "FALSE"
+
+    def test_string(self):
+        result = compile_expr("'hello'")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "'hello'"
+
+    def test_negative_int(self):
+        result = compile_expr("-5")
+        assert isinstance(result, UnaryExpr)
+        assert result.op == UnaryOp.NEG
+        assert isinstance(result.operand, LiteralExpr)
+        assert result.operand.value == "5"
+
+    def test_zero(self):
+        result = compile_expr("0")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "0"
+
+    def test_large_int(self):
+        result = compile_expr("1000000")
+        assert isinstance(result, LiteralExpr)
+        assert result.value == "1000000"
+
+
+# ---------------------------------------------------------------------------
+# Variable references
+# ---------------------------------------------------------------------------
+
+class TestVariableRef:
+    def test_simple_name(self):
+        result = compile_expr("x")
+        assert isinstance(result, VariableRef)
+        assert result.name == "x"
+
+    def test_self_attr(self):
+        result = compile_expr("self.sensor")
+        assert isinstance(result, VariableRef)
+        assert result.name == "sensor"
+
+    def test_member_access(self):
+        result = compile_expr("self.fb.Q")
+        assert isinstance(result, MemberAccessExpr)
+        assert result.member == "Q"
+        assert isinstance(result.struct, VariableRef)
+        assert result.struct.name == "fb"
+
+    def test_nested_member_access(self):
+        result = compile_expr("self.a.b.c")
+        assert isinstance(result, MemberAccessExpr)
+        assert result.member == "c"
+        assert isinstance(result.struct, MemberAccessExpr)
+        assert result.struct.member == "b"
+
+
+# ---------------------------------------------------------------------------
+# Binary operators
+# ---------------------------------------------------------------------------
+
+class TestBinaryOp:
+    def test_add(self):
+        result = compile_expr("a + b")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.ADD
+
+    def test_sub(self):
+        result = compile_expr("a - b")
+        assert result.op == BinaryOp.SUB
+
+    def test_mul(self):
+        result = compile_expr("a * b")
+        assert result.op == BinaryOp.MUL
+
+    def test_div(self):
+        result = compile_expr("a / b")
+        assert result.op == BinaryOp.DIV
+
+    def test_mod(self):
+        result = compile_expr("a % b")
+        assert result.op == BinaryOp.MOD
+
+    def test_bitand(self):
+        result = compile_expr("a & b")
+        assert result.op == BinaryOp.AND
+
+    def test_bitor(self):
+        result = compile_expr("a | b")
+        assert result.op == BinaryOp.OR
+
+    def test_bitxor(self):
+        result = compile_expr("a ^ b")
+        assert result.op == BinaryOp.XOR
+
+    def test_lshift(self):
+        result = compile_expr("a << b")
+        assert result.op == BinaryOp.SHL
+
+    def test_rshift(self):
+        result = compile_expr("a >> b")
+        assert result.op == BinaryOp.SHR
+
+    def test_pow(self):
+        result = compile_expr("a ** b")
+        assert result.op == BinaryOp.EXPT
+
+    def test_floordiv(self):
+        result = compile_expr("a // b")
+        assert result.op == BinaryOp.DIV
+
+    def test_nested(self):
+        result = compile_expr("a + b * c")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.ADD
+        assert isinstance(result.right, BinaryExpr)
+        assert result.right.op == BinaryOp.MUL
+
+
+# ---------------------------------------------------------------------------
+# Boolean operators
+# ---------------------------------------------------------------------------
+
+class TestBoolOp:
+    def test_and(self):
+        result = compile_expr("a and b")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.AND
+
+    def test_or(self):
+        result = compile_expr("a or b")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.OR
+
+    def test_chain_and(self):
+        result = compile_expr("a and b and c")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.AND
+        assert isinstance(result.left, BinaryExpr)
+        assert result.left.op == BinaryOp.AND
+
+    def test_chain_or(self):
+        result = compile_expr("a or b or c")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.OR
+        assert isinstance(result.left, BinaryExpr)
+
+
+# ---------------------------------------------------------------------------
+# Comparisons
+# ---------------------------------------------------------------------------
+
+class TestCompare:
+    def test_eq(self):
+        result = compile_expr("a == b")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.EQ
+
+    def test_ne(self):
+        result = compile_expr("a != b")
+        assert result.op == BinaryOp.NE
+
+    def test_gt(self):
+        result = compile_expr("a > b")
+        assert result.op == BinaryOp.GT
+
+    def test_ge(self):
+        result = compile_expr("a >= b")
+        assert result.op == BinaryOp.GE
+
+    def test_lt(self):
+        result = compile_expr("a < b")
+        assert result.op == BinaryOp.LT
+
+    def test_le(self):
+        result = compile_expr("a <= b")
+        assert result.op == BinaryOp.LE
+
+    def test_chained(self):
+        result = compile_expr("a < b < c")
+        assert isinstance(result, BinaryExpr)
+        assert result.op == BinaryOp.AND
+        assert isinstance(result.left, BinaryExpr)
+        assert result.left.op == BinaryOp.LT
+        assert isinstance(result.right, BinaryExpr)
+        assert result.right.op == BinaryOp.LT
+
+
+# ---------------------------------------------------------------------------
+# Unary operators
+# ---------------------------------------------------------------------------
+
+class TestUnaryOp:
+    def test_not(self):
+        result = compile_expr("not a")
+        assert isinstance(result, UnaryExpr)
+        assert result.op == UnaryOp.NOT
+
+    def test_neg(self):
+        result = compile_expr("-a")
+        assert isinstance(result, UnaryExpr)
+        assert result.op == UnaryOp.NEG
+
+    def test_invert(self):
+        result = compile_expr("~a")
+        assert isinstance(result, UnaryExpr)
+        assert result.op == UnaryOp.NOT
+
+    def test_uadd(self):
+        result = compile_expr("+a")
+        assert isinstance(result, VariableRef)
+        assert result.name == "a"
+
+
+# ---------------------------------------------------------------------------
+# Function calls
+# ---------------------------------------------------------------------------
+
+class TestFunctionCall:
+    def test_simple_call(self):
+        result = compile_expr("SQRT(x)")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "SQRT"
+        assert len(result.args) == 1
+
+    def test_call_with_kwargs(self):
+        result = compile_expr("LIMIT(MN=0, IN=x, MX=100)")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "LIMIT"
+        assert len(result.args) == 3
+        assert result.args[0].name == "MN"
+
+    def test_abs_builtin(self):
+        result = compile_expr("abs(x)")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "ABS"
+
+    def test_min_builtin(self):
+        result = compile_expr("min(a, b)")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "MIN"
+
+    def test_max_builtin(self):
+        result = compile_expr("max(a, b)")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "MAX"
+
+    def test_generic_function(self):
+        result = compile_expr("MyFunc(a, b)")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "MyFunc"
+
+
+# ---------------------------------------------------------------------------
+# Type conversion
+# ---------------------------------------------------------------------------
+
+class TestTypeConversion:
+    def test_int_to_real(self):
+        result = compile_expr("INT_TO_REAL(x)")
+        assert isinstance(result, TypeConversionExpr)
+        assert result.target_type == PrimitiveTypeRef(type=PrimitiveType.REAL)
+        assert isinstance(result.source, VariableRef)
+
+    def test_real_to_dint(self):
+        result = compile_expr("REAL_TO_DINT(x)")
+        assert isinstance(result, TypeConversionExpr)
+        assert result.target_type == PrimitiveTypeRef(type=PrimitiveType.DINT)
+
+    def test_unknown_target_type(self):
+        result = compile_expr("INT_TO_MyType(x)")
+        assert isinstance(result, TypeConversionExpr)
+        assert result.target_type == NamedTypeRef(name="MyType")
+
+
+# ---------------------------------------------------------------------------
+# Array access
+# ---------------------------------------------------------------------------
+
+class TestArrayAccess:
+    def test_single_dim(self):
+        result = compile_expr("a[0]")
+        assert isinstance(result, ArrayAccessExpr)
+        assert len(result.indices) == 1
+        assert isinstance(result.indices[0], LiteralExpr)
+        assert result.indices[0].value == "0"
+
+    def test_multi_dim(self):
+        result = compile_expr("a[i, j]")
+        assert isinstance(result, ArrayAccessExpr)
+        assert len(result.indices) == 2
+
+    def test_expression_index(self):
+        result = compile_expr("a[i + 1]")
+        assert isinstance(result, ArrayAccessExpr)
+        assert isinstance(result.indices[0], BinaryExpr)
+
+
+# ---------------------------------------------------------------------------
+# Ternary (if expression)
+# ---------------------------------------------------------------------------
+
+class TestIfExp:
+    def test_basic(self):
+        result = compile_expr("a if cond else b")
+        assert isinstance(result, FunctionCallExpr)
+        assert result.function_name == "SEL"
+        assert len(result.args) == 3
+        # SEL(cond, false_val, true_val)
+        assert isinstance(result.args[0].value, VariableRef)
+        assert result.args[0].value.name == "cond"
+        assert isinstance(result.args[1].value, VariableRef)
+        assert result.args[1].value.name == "b"  # false value
+        assert isinstance(result.args[2].value, VariableRef)
+        assert result.args[2].value.name == "a"  # true value
+
+
+# ---------------------------------------------------------------------------
+# Bit access
+# ---------------------------------------------------------------------------
+
+class TestBitAccess:
+    def test_self_attr_bit5(self):
+        result = compile_expr("self.status.bit5")
+        assert isinstance(result, BitAccessExpr)
+        assert isinstance(result.target, VariableRef)
+        assert result.target.name == "status"
+        assert result.bit_index == 5
+
+    def test_bit0(self):
+        result = compile_expr("self.word.bit0")
+        assert isinstance(result, BitAccessExpr)
+        assert result.bit_index == 0
+
+    def test_bit31(self):
+        result = compile_expr("self.dword.bit31")
+        assert isinstance(result, BitAccessExpr)
+        assert result.bit_index == 31
+
+    def test_nested_member_bit_access(self):
+        result = compile_expr("self.data.status.bit3")
+        assert isinstance(result, BitAccessExpr)
+        assert result.bit_index == 3
+        assert isinstance(result.target, MemberAccessExpr)
+        assert result.target.member == "status"
+
+    def test_array_element_bit_access(self):
+        result = compile_expr("self.arr[0].bit7")
+        assert isinstance(result, BitAccessExpr)
+        assert result.bit_index == 7
+        assert isinstance(result.target, ArrayAccessExpr)
+
+    def test_regular_member_no_false_positive(self):
+        result = compile_expr("self.data.status")
+        assert isinstance(result, MemberAccessExpr)
+        assert result.member == "status"
+
+    def test_partial_match_no_false_positive(self):
+        result = compile_expr("self.data.bitmap")
+        assert isinstance(result, MemberAccessExpr)
+        assert result.member == "bitmap"

@@ -1,0 +1,152 @@
+"""Statement AST nodes for the Universal IR."""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal, Union
+
+from pydantic import BaseModel, Field, model_validator
+
+from .expressions import CallArg, Expression
+
+
+class Assignment(BaseModel):
+    kind: Literal["assignment"] = "assignment"
+    target: Expression
+    value: Expression
+
+
+class IfBranch(BaseModel):
+    condition: Expression
+    body: list[Statement]
+
+
+class IfStatement(BaseModel):
+    kind: Literal["if"] = "if"
+    if_branch: IfBranch
+    elsif_branches: list[IfBranch] = []
+    else_body: list[Statement] = []
+
+
+class CaseRange(BaseModel):
+    """An inclusive integer range for a CASE branch (e.g. 20..29)."""
+
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def _bounds_check(self):
+        if self.start > self.end:
+            raise ValueError(
+                f"start ({self.start}) must be <= end ({self.end})"
+            )
+        return self
+
+
+class CaseBranch(BaseModel):
+    """One branch of a CASE statement.
+
+    Matches if the selector equals any value in *values*
+    or falls within any range in *ranges*.
+    """
+
+    values: list[int] = []
+    ranges: list[CaseRange] = []
+    body: list[Statement] = []
+
+
+class CaseStatement(BaseModel):
+    kind: Literal["case"] = "case"
+    selector: Expression
+    branches: list[CaseBranch]
+    else_body: list[Statement] = []
+
+
+class ForStatement(BaseModel):
+    kind: Literal["for"] = "for"
+    loop_var: str
+    from_expr: Expression
+    to_expr: Expression
+    by_expr: Expression | None = None
+    body: list[Statement]
+
+
+class WhileStatement(BaseModel):
+    kind: Literal["while"] = "while"
+    condition: Expression
+    body: list[Statement]
+
+
+class RepeatStatement(BaseModel):
+    kind: Literal["repeat"] = "repeat"
+    body: list[Statement]
+    until: Expression
+
+
+class ExitStatement(BaseModel):
+    kind: Literal["exit"] = "exit"
+
+
+class ContinueStatement(BaseModel):
+    kind: Literal["continue"] = "continue"
+
+
+class ReturnStatement(BaseModel):
+    kind: Literal["return"] = "return"
+    value: Expression | None = None
+
+
+class FunctionCallStatement(BaseModel):
+    """Call a function as a statement (discarding return value)."""
+
+    kind: Literal["function_call_stmt"] = "function_call_stmt"
+    function_name: str
+    args: list[CallArg] = []
+
+
+class FBInvocation(BaseModel):
+    """Invoke a function block instance.
+
+    *inputs*: parameter_name → value expression  (the := assignments)
+    *outputs*: parameter_name → target expression (the => assignments)
+    """
+
+    kind: Literal["fb_invocation"] = "fb_invocation"
+    instance_name: str
+    fb_type: str | None = None
+    inputs: dict[str, Expression] = {}
+    outputs: dict[str, Expression] = {}
+
+
+class EmptyStatement(BaseModel):
+    kind: Literal["empty"] = "empty"
+
+
+Statement = Annotated[
+    Union[
+        Assignment,
+        IfStatement,
+        CaseStatement,
+        ForStatement,
+        WhileStatement,
+        RepeatStatement,
+        ExitStatement,
+        ContinueStatement,
+        ReturnStatement,
+        FunctionCallStatement,
+        FBInvocation,
+        EmptyStatement,
+    ],
+    Field(discriminator="kind"),
+]
+
+# Rebuild models with recursive Statement references.
+IfBranch.model_rebuild()
+IfStatement.model_rebuild()
+CaseBranch.model_rebuild()
+CaseStatement.model_rebuild()
+ForStatement.model_rebuild()
+WhileStatement.model_rebuild()
+RepeatStatement.model_rebuild()
+ReturnStatement.model_rebuild()
+FunctionCallStatement.model_rebuild()
+FBInvocation.model_rebuild()
