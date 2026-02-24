@@ -368,11 +368,11 @@ class TestNetworkComments:
         assert pou.networks[0].comment == "Initialize"
 
     def test_works_with_function(self):
-        @function(returns=REAL)
+        @function
         class AddOne:
             x = input_var(REAL)
 
-            def logic(self):
+            def logic(self) -> REAL:
                 # Compute result
                 return self.x + 1.0
 

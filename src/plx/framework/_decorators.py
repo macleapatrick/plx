@@ -1,4 +1,4 @@
-"""POU decorators: @fb, @program, @function(returns=...), @method.
+"""POU decorators: @fb, @program, @function, @method.
 
 These orchestrate the full compilation pipeline — collecting variable
 descriptors, parsing the ``logic()`` method source, compiling via AST
@@ -37,7 +37,6 @@ from ._compilation_helpers import (
 )
 from ._descriptors import VarDescriptor, VarDirection, _collect_descriptors
 from ._protocols import CompiledPOU
-from ._types import _resolve_type_ref
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +419,6 @@ def _compile_all_methods(
 def _compile_pou_class(
     cls: type,
     pou_type: POUType,
-    return_type: TypeRef | None = None,
     language: Language | None = None,
     folder: str = "",
 ) -> type:
@@ -429,6 +427,19 @@ def _compile_pou_class(
     extends = _detect_parent_pou(cls)
     var_groups, declared_vars, static_var_types = _build_var_context(cls)
     func_def, source, start_lineno = _parse_logic_source(cls)
+
+    # For FUNCTION POUs, extract return type from logic() annotation
+    return_type: TypeRef | None = None
+    if pou_type == POUType.FUNCTION:
+        if func_def.returns is None:
+            raise CompileError(
+                f"FUNCTION '{cls.__name__}' requires a return type — "
+                f"annotate logic(): def logic(self) -> REAL:"
+            )
+        return_type = resolve_annotation(
+            func_def.returns,
+            location_hint=f"{cls.__name__}.logic()",
+        )
 
     try:
         source_file = inspect.getfile(cls)
@@ -531,22 +542,26 @@ def program(cls: type = None, *, language: str | None = None, folder: str = "") 
     return decorator
 
 
-def function(*, returns: Any, language: str | None = None, folder: str = "") -> Any:
-    """Decorator factory for a FUNCTION POU.
+def function(cls: type = None, *, language: str | None = None, folder: str = "") -> Any:
+    """Decorate a class as a FUNCTION POU.
 
-    Example::
+    The return type is taken from the ``logic()`` annotation::
 
-        @function(returns=REAL)
+        @function
         class AddOne:
             x = input_var(REAL)
 
-            def logic(self):
+            def logic(self) -> REAL:
                 return self.x + 1.0
+
+        @function(language="FBD")
+        class FbdFunc:
+            ...
     """
-    return_type = _resolve_type_ref(returns)
     lang = _validate_language(language)
+    if cls is not None:
+        return _compile_pou_class(cls, POUType.FUNCTION, language=lang, folder=folder)
 
-    def decorator(cls: type) -> type:
-        return _compile_pou_class(cls, POUType.FUNCTION, return_type=return_type, language=lang, folder=folder)
-
+    def decorator(c: type) -> type:
+        return _compile_pou_class(c, POUType.FUNCTION, language=lang, folder=folder)
     return decorator

@@ -27,11 +27,11 @@ class _TestProgram:
         pass
 
 
-@function(returns=REAL)
+@function
 class _TestFunc:
     a = input_var(REAL)
 
-    def logic(self):
+    def logic(self) -> REAL:
         return self.a + 1.0
 
 

@@ -68,13 +68,13 @@ class MainProgram:
             self.output = 0.0
 
 
-@function(returns=REAL)
+@function
 class Clamp:
     value = input_var(REAL)
     low = input_var(REAL)
     high = input_var(REAL)
 
-    def logic(self):
+    def logic(self) -> REAL:
         if self.value < self.low:
             return self.low
         elif self.value > self.high:

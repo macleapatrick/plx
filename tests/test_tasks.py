@@ -146,10 +146,10 @@ class TestTaskCompile:
     def test_function_assigned_to_task_raises(self):
         from plx.framework import function
 
-        @function(returns=REAL)
+        @function
         class SomeFunc:
             x = input_var(REAL)
-            def logic(self):
+            def logic(self) -> REAL:
                 return self.x + 1.0
 
         t = task("Bad", periodic=T(ms=10), pous=[SomeFunc])

@@ -133,11 +133,11 @@ class TestProgramDecorator:
 
 class TestFunctionDecorator:
     def test_basic_function(self):
-        @function(returns=REAL)
+        @function
         class AddOne:
             x = input_var(REAL)
 
-            def logic(self):
+            def logic(self) -> REAL:
                 return self.x + 1.0
 
         pou = AddOne.compile()
@@ -146,11 +146,11 @@ class TestFunctionDecorator:
         assert pou.return_type == PrimitiveTypeRef(type=PrimitiveType.REAL)
 
     def test_function_return_type(self):
-        @function(returns=DINT)
+        @function
         class Square:
             x = input_var(DINT)
 
-            def logic(self):
+            def logic(self) -> DINT:
                 return self.x * self.x
 
         pou = Square.compile()
@@ -197,6 +197,15 @@ class TestDecoratorErrors:
             class KwArgs:
                 def logic(self, **kwargs):
                     pass
+
+    def test_function_missing_return_annotation(self):
+        with pytest.raises(CompileError, match="requires a return type"):
+            @function
+            class NoReturn:
+                x = input_var(REAL)
+
+                def logic(self):
+                    return self.x + 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -334,21 +343,21 @@ class TestProgramLanguage:
 
 class TestFunctionLanguage:
     def test_function_default_language_is_none(self):
-        @function(returns=REAL)
+        @function
         class DefaultLangFunc:
             x = input_var(REAL)
 
-            def logic(self):
+            def logic(self) -> REAL:
                 return self.x
 
         assert DefaultLangFunc.compile().language is None
 
     def test_function_language_fbd(self):
-        @function(returns=REAL, language="FBD")
+        @function(language="FBD")
         class FbdFunc:
             x = input_var(REAL)
 
-            def logic(self):
+            def logic(self) -> REAL:
                 return self.x
 
         assert FbdFunc.compile().language == Language.FBD
@@ -375,9 +384,9 @@ class TestLanguageErrors:
 
     def test_sfc_rejected_on_function(self):
         with pytest.raises(CompileError, match="Use @sfc instead"):
-            @function(returns=BOOL, language="SFC")
+            @function(language="SFC")
             class SfcFunc:
-                def logic(self):
+                def logic(self) -> BOOL:
                     pass
 
     def test_invalid_language_string(self):
@@ -510,11 +519,11 @@ class TestFolderKwarg:
         assert FolderProgram.compile().folder == "programs/main"
 
     def test_function_folder(self):
-        @function(returns=REAL, folder="utils")
+        @function(folder="utils")
         class FolderFunc:
             x = input_var(REAL)
 
-            def logic(self):
+            def logic(self) -> REAL:
                 return self.x + 1.0
 
         assert FolderFunc.compile().folder == "utils"

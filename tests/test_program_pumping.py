@@ -1,4 +1,4 @@
-"""Water/Wastewater Pumping Station — exercises @function(returns=REAL),
+"""Water/Wastewater Pumping Station — exercises @function with -> REAL,
 @global_vars with address mapping, rising() for pump cycle detection,
 delayed() for fail-to-start, and 4-level alarm with hysteresis.
 
@@ -57,7 +57,7 @@ class AlarmThresholds:
 # ==========================================================================
 
 
-@function(returns=REAL)
+@function
 class Clamp:
     """Clamp a value between lo and hi bounds."""
 
@@ -65,7 +65,7 @@ class Clamp:
     lo = input_var(REAL, initial=0.0)
     hi = input_var(REAL, initial=100.0)
 
-    def logic(self):
+    def logic(self) -> REAL:
         if self.value > self.hi:
             return self.hi
         if self.value < self.lo:
