@@ -5,8 +5,26 @@ build-backend = "hatchling.build"
 [project]
 name = "plx"
 version = "0.1.0"
+description = "Universal PLC programming framework for Allen Bradley, Siemens, and Beckhoff"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.0"]
+authors = [
+    {name = "Patrick MacLea"},
+]
+keywords = ["plc", "automation", "iec-61131", "allen-bradley", "siemens", "beckhoff", "twincat", "structured-text"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/macleapatrick/plx"
+Repository = "https://github.com/macleapatrick/plx"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "hypothesis>=6.0"]

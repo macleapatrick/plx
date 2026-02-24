@@ -68,6 +68,32 @@ class TransitionPath:
         self.source_descs = source_descs
         self.target_descs = target_descs
 
+    # -- Guard operators against precedence / chaining mistakes --
+
+    def __and__(self, other: Any) -> Any:
+        raise TypeError(
+            "Operator precedence error: `A >> B & C` binds as `(A >> B) & C`. "
+            "Use parentheses: `A >> (B & C)`"
+        )
+
+    def __rand__(self, other: Any) -> Any:
+        raise TypeError(
+            "Operator precedence error: `A & B >> C` binds as `A & (B >> C)`. "
+            "Use parentheses: `(A & B) >> C`"
+        )
+
+    def __rshift__(self, other: Any) -> Any:
+        raise TypeError(
+            "Cannot chain `>>`: `A >> B >> C` is not supported. "
+            "Use separate @transition decorators for each step-to-step path."
+        )
+
+    def __rrshift__(self, other: Any) -> Any:
+        raise TypeError(
+            "Cannot chain `>>`: `A >> B >> C` is not supported. "
+            "Use separate @transition decorators for each step-to-step path."
+        )
+
 
 # ---------------------------------------------------------------------------
 # StepGroup — for AND-fork / AND-join via & operator

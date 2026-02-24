@@ -383,7 +383,7 @@ class TestArithmeticExpressions:
                 self.sum_val = self.a + self.b
                 self.diff = self.a - self.b
                 self.prod = self.a * self.b
-                self.quot = self.a // self.b
+                self.quot = self.a / self.b
                 self.neg = -self.a
 
         ctx = simulate(MathTest)

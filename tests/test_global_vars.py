@@ -77,6 +77,13 @@ class TestBareAnnotations:
 # ---------------------------------------------------------------------------
 
 class TestGlobalVarDescriptor:
+    def test_global_var_used_as_decorator_error(self):
+        """Using @global_var (singular) instead of @global_vars gives a clear error."""
+        with pytest.raises(TypeError, match="Did you mean @global_vars"):
+            @global_var
+            class IO:
+                motor: BOOL = False
+
     def test_basic(self):
         @global_vars
         class IO:

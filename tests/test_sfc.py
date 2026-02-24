@@ -516,3 +516,91 @@ class TestSfcFolderKwarg:
             S0 = step(initial=True)
 
         assert NoFolderSfc.compile().folder == ""
+
+
+# ---------------------------------------------------------------------------
+# Operator precedence / chaining guards on TransitionPath
+# ---------------------------------------------------------------------------
+
+class TestTransitionPathOperatorGuards:
+    """TransitionPath should reject & and chained >> with clear errors."""
+
+    def test_transition_path_and_step(self):
+        """(A >> B) & C must raise TypeError."""
+        A = step(initial=True)
+        B = step()
+        C = step()
+        path = A >> B
+        with pytest.raises(TypeError, match="precedence"):
+            path & C
+
+    def test_transition_path_and_step_group(self):
+        """(A >> B) & (C & D) must raise TypeError."""
+        A = step(initial=True)
+        B = step()
+        C = step()
+        D = step()
+        path = A >> B
+        group = C & D
+        with pytest.raises(TypeError, match="precedence"):
+            path & group
+
+    def test_step_and_transition_path(self):
+        """C & (A >> B) must raise TypeError (rand)."""
+        A = step(initial=True)
+        B = step()
+        C = step()
+        path = A >> B
+        with pytest.raises(TypeError, match="precedence"):
+            C & path
+
+    def test_step_group_and_transition_path(self):
+        """(C & D) & (A >> B) must raise TypeError (rand)."""
+        A = step(initial=True)
+        B = step()
+        C = step()
+        D = step()
+        path = A >> B
+        group = C & D
+        with pytest.raises(TypeError, match="precedence"):
+            group & path
+
+    def test_chain_rshift(self):
+        """(A >> B) >> C must raise TypeError."""
+        A = step(initial=True)
+        B = step()
+        C = step()
+        path = A >> B
+        with pytest.raises(TypeError, match="Cannot chain"):
+            path >> C
+
+    def test_chain_rrshift(self):
+        """A >> (B >> C) must raise TypeError."""
+        A = step(initial=True)
+        B = step()
+        C = step()
+        path = B >> C
+        with pytest.raises(TypeError, match="Cannot chain"):
+            A >> path
+
+    def test_correct_parenthesized_divergence_still_works(self):
+        """A >> (B & C) should still produce a valid TransitionPath."""
+        from plx.framework._sfc import TransitionPath
+        A = step(initial=True)
+        B = step()
+        C = step()
+        result = A >> (B & C)
+        assert isinstance(result, TransitionPath)
+        assert result.source_descs == [A]
+        assert set(result.target_descs) == {B, C}
+
+    def test_correct_parenthesized_convergence_still_works(self):
+        """(A & B) >> C should still produce a valid TransitionPath."""
+        from plx.framework._sfc import TransitionPath
+        A = step(initial=True)
+        B = step()
+        C = step()
+        result = (A & B) >> C
+        assert isinstance(result, TransitionPath)
+        assert set(result.source_descs) == {A, B}
+        assert result.target_descs == [C]

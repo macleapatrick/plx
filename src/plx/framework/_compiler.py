@@ -180,13 +180,16 @@ _BINOP_MAP: dict[type, BinaryOp] = {
     ast.Mult: BinaryOp.MUL,
     ast.Div: BinaryOp.DIV,
     ast.Mod: BinaryOp.MOD,
-    ast.BitAnd: BinaryOp.AND,
-    ast.BitOr: BinaryOp.OR,
     ast.BitXor: BinaryOp.XOR,
     ast.LShift: BinaryOp.SHL,
     ast.RShift: BinaryOp.SHR,
     ast.Pow: BinaryOp.EXPT,
-    ast.FloorDiv: BinaryOp.DIV,
+}
+
+_REJECTED_BINOP_MESSAGES: dict[type, str] = {
+    ast.FloorDiv: "Floor division (//) is not supported — PLC division has no floor variant. Use / instead.",
+    ast.BitAnd: "Bitwise & is not supported in logic(). Use 'and' for logical AND.",
+    ast.BitOr: "Bitwise | is not supported in logic(). Use 'or' for logical OR.",
 }
 
 _CMPOP_MAP: dict[type, BinaryOp] = {
@@ -474,6 +477,9 @@ class ASTCompiler:
         )
 
     def _compile_augassign(self, node: ast.AugAssign) -> list[Statement]:
+        rejected_msg = _REJECTED_BINOP_MESSAGES.get(type(node.op))
+        if rejected_msg is not None:
+            raise CompileError(rejected_msg, node, self.ctx)
         target = self._compile_target(node.target, node)
         op = _BINOP_MAP.get(type(node.op))
         if op is None:
@@ -925,6 +931,9 @@ class ASTCompiler:
         return MemberAccessExpr(struct=struct, member=node.attr)
 
     def _compile_binop(self, node: ast.BinOp) -> Expression:
+        rejected_msg = _REJECTED_BINOP_MESSAGES.get(type(node.op))
+        if rejected_msg is not None:
+            raise CompileError(rejected_msg, node, self.ctx)
         op = _BINOP_MAP.get(type(node.op))
         if op is None:
             raise CompileError(
@@ -975,7 +984,10 @@ class ASTCompiler:
         if isinstance(node.op, ast.USub):
             return UnaryExpr(op=UnaryOp.NEG, operand=operand)
         if isinstance(node.op, ast.Invert):
-            return UnaryExpr(op=UnaryOp.NOT, operand=operand)
+            raise CompileError(
+                "Bitwise ~ is not supported in logic(). Use 'not' for logical NOT.",
+                node, self.ctx,
+            )
         if isinstance(node.op, ast.UAdd):
             return operand  # +x → x
         raise CompileError(

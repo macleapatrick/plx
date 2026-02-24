@@ -1,7 +1,10 @@
 """Tests for AST compiler — expression handlers."""
 
-from conftest import compile_expr
+import pytest
 
+from conftest import compile_expr, compile_stmts
+
+from plx.framework._compiler import CompileError
 from plx.model.expressions import (
     ArrayAccessExpr,
     BinaryExpr,
@@ -125,12 +128,12 @@ class TestBinaryOp:
         assert result.op == BinaryOp.MOD
 
     def test_bitand(self):
-        result = compile_expr("a & b")
-        assert result.op == BinaryOp.AND
+        with pytest.raises(CompileError, match="Bitwise &"):
+            compile_expr("a & b")
 
     def test_bitor(self):
-        result = compile_expr("a | b")
-        assert result.op == BinaryOp.OR
+        with pytest.raises(CompileError, match="Bitwise \\|"):
+            compile_expr("a | b")
 
     def test_bitxor(self):
         result = compile_expr("a ^ b")
@@ -149,8 +152,8 @@ class TestBinaryOp:
         assert result.op == BinaryOp.EXPT
 
     def test_floordiv(self):
-        result = compile_expr("a // b")
-        assert result.op == BinaryOp.DIV
+        with pytest.raises(CompileError, match="Floor division"):
+            compile_expr("a // b")
 
     def test_nested(self):
         result = compile_expr("a + b * c")
@@ -158,6 +161,18 @@ class TestBinaryOp:
         assert result.op == BinaryOp.ADD
         assert isinstance(result.right, BinaryExpr)
         assert result.right.op == BinaryOp.MUL
+
+    def test_floordiv_augassign(self):
+        with pytest.raises(CompileError, match="Floor division"):
+            compile_stmts("a //= b")
+
+    def test_bitand_augassign(self):
+        with pytest.raises(CompileError, match="Bitwise &"):
+            compile_stmts("a &= b")
+
+    def test_bitor_augassign(self):
+        with pytest.raises(CompileError, match="Bitwise \\|"):
+            compile_stmts("a |= b")
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +260,8 @@ class TestUnaryOp:
         assert result.op == UnaryOp.NEG
 
     def test_invert(self):
-        result = compile_expr("~a")
-        assert isinstance(result, UnaryExpr)
-        assert result.op == UnaryOp.NOT
+        with pytest.raises(CompileError, match="Bitwise ~"):
+            compile_expr("~a")
 
     def test_uadd(self):
         result = compile_expr("+a")

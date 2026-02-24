@@ -90,6 +90,11 @@ def global_var(
         motor_run = global_var(BOOL, address="%Q0.0")
         speed = global_var(REAL, initial=50.0, retain=True)
     """
+    if isinstance(type_arg, type) and not isinstance(type_arg, PrimitiveType):
+        raise TypeError(
+            "Did you mean @global_vars? "
+            "global_var() declares individual variables inside a @global_vars class."
+        )
     return GlobalVarDescriptor(
         data_type=_resolve_type_ref(type_arg),
         initial_value=_format_initial(initial),
