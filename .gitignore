@@ -9,3 +9,4 @@ build/
 .pytest_cache/
 private/
 CLAUDE.md
+.claude/
