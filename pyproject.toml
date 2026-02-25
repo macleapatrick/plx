@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "plx"
+name = "plx-controls"
 version = "0.1.0"
 description = "Universal PLC programming framework for Allen Bradley, Siemens, and Beckhoff"
 readme = "README.md"
