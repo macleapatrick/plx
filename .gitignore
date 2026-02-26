@@ -8,5 +8,6 @@ build/
 *.egg
 .pytest_cache/
 private/
+.python-version
 CLAUDE.md
 .claude/
